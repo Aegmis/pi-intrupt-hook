@@ -8,7 +8,7 @@
 //   node test.mjs
 
 import { writeFileSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -20,6 +20,7 @@ writeFileSync(tmp, src);
 process.env.AEGMIS_BASE_URL = "http://127.0.0.1:19999"; // dead port → fail closed
 process.env.AEGMIS_API_KEY = "sk_org_org_abc_hash";
 process.env.AEGMIS_FORWARD_ALL = "false"; // exercise local pattern gating
+process.env.AEGMIS_BLOCKED_PATHS = join(homedir(), "keepsafe"); // hard-deny target
 delete process.env.AEGMIS_GATED_TOOLS;
 delete process.env.AEGMIS_APPROVAL;
 
@@ -80,6 +81,43 @@ check(!!(gatedResult && gatedResult.block), "wiring — handler returns block fo
 
 const allowedResult = await handler({ toolName: "read", input: { path: "README.md" } }, {});
 check(allowedResult === undefined, "wiring — handler returns undefined for non-gated call");
+
+// ── Hard-block (AEGMIS_BLOCKED_PATHS) — deny locally, no approval round-trip ──────
+// A hard-blocked rm must return { block: true } whose reason names
+// AEGMIS_BLOCKED_PATHS, WITHOUT ever contacting the (dead) API.
+const keep = join(homedir(), "keepsafe");
+const HARD_CASES = [
+  // (description, command, expect_hard_blocked)
+  ["bash — rm of hard-blocked dir (denied locally)", `rm -rf ${keep}`, true],
+  ["bash — rm of file under hard-blocked dir (denied)", `rm ${keep}/secrets.txt`, true],
+  ["bash — rm elsewhere (not hard-blocked)", `rm -rf ${join(homedir(), "other/tmp")}`, false],
+];
+for (const [desc, cmd, expectBlocked] of HARD_CASES) {
+  const dec = await requireApproval("bash", { command: cmd });
+  const hardBlocked = !!(dec && dec.block && String(dec.reason).includes("AEGMIS_BLOCKED_PATHS"));
+  check(hardBlocked === expectBlocked, desc, `expected hard_blocked=${expectBlocked}, got ${hardBlocked} (reason=${dec && dec.reason})`);
+}
+
+// Forward-all mode must NOT hard-block — the blocked-path deny is local-mode only.
+// Load a second copy of the module with FORWARD_ALL=true + the same blocked path.
+{
+  const tmp2 = join(tmpdir(), `intrupt-pi-fa-${process.pid}.mjs`);
+  writeFileSync(tmp2, src);
+  const savedFA = process.env.AEGMIS_FORWARD_ALL;
+  process.env.AEGMIS_FORWARD_ALL = "true";
+  let mod2;
+  try {
+    mod2 = await import(pathToFileURL(tmp2).href);
+  } finally {
+    try { rmSync(tmp2); } catch {}
+    process.env.AEGMIS_FORWARD_ALL = savedFA;
+  }
+  const dec = await mod2.__test.requireApproval("bash", { command: `rm -rf ${keep}` });
+  // In forward-all mode the deny is inert: it reaches the API (unreachable → fail-closed
+  // block) rather than the local AEGMIS_BLOCKED_PATHS deny.
+  const inert = !(dec && dec.block && String(dec.reason).includes("AEGMIS_BLOCKED_PATHS"));
+  check(inert, "forward-all — AEGMIS_BLOCKED_PATHS is inert (not hard-blocked)");
+}
 
 const total = pass + fail;
 console.log(`\nResults: ${pass}/${total} passed${fail ? `, ${fail} failed` : " ✓"}`);

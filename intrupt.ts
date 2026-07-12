@@ -32,6 +32,8 @@ const BASE_URL = (env.AEGMIS_BASE_URL || "https://api.aegmis.com").replace(/\/+$
 const API_KEY = env.AEGMIS_API_KEY || "";
 const TIMEOUT = parseInt(env.AEGMIS_TIMEOUT || "600", 10);
 const POLL_INTERVAL = parseInt(env.AEGMIS_POLL_INTERVAL || "5", 10);
+// Approval delivery channel: "slack" (default) or "email".
+const CHANNEL = env.AEGMIS_CHANNEL || "slack";
 const FORWARD_ALL = ["1", "true", "yes"].includes((env.AEGMIS_FORWARD_ALL || "true").toLowerCase());
 // Kill switch: AEGMIS_APPROVAL=false disables the gate entirely (allow all).
 const APPROVAL_ENABLED = !["0", "false", "no", "off", "disable", "disabled"].includes(
@@ -94,18 +96,43 @@ for (const _pp of (env.AEGMIS_PROTECTED_PATHS || "").split(",")) {
     _PROTECTED_LITERAL.push(resolve(_p.startsWith("~") ? homedir() + _p.slice(1) : _p));
   }
 }
+// Hard-blocked paths (AEGMIS_BLOCKED_PATHS) — same syntax as AEGMIS_PROTECTED_PATHS
+// (literal dir + subtree, or "re:" regex), but an `rm` hitting one is DENIED locally
+// with no approval round-trip. Local mode only (mirrors the protected-path gate).
+const _BLOCKED_LITERAL = [];
+const _BLOCKED_REGEX = [];
+for (const _pp of (env.AEGMIS_BLOCKED_PATHS || "").split(",")) {
+  const _t = _pp.trim();
+  if (!_t) continue;
+  if (_t.startsWith("re:")) {
+    try { _BLOCKED_REGEX.push(new RegExp(_t.slice(3))); }
+    catch (e) { console.error(`[intrupt hook] ignoring invalid AEGMIS_BLOCKED_PATHS regex ${JSON.stringify(_t.slice(3))}: ${e.message}`); }
+  } else {
+    const _p = _t.replace(/\/+$/, "");
+    _BLOCKED_LITERAL.push(resolve(_p.startsWith("~") ? homedir() + _p.slice(1) : _p));
+  }
+}
+
 const _STATE = { cwd: "" };
-function rmHitsProtected(command) {
-  if ((!_PROTECTED_LITERAL.length && !_PROTECTED_REGEX.length) || !/\brm\b/.test(command)) return false;
+// True if an rm target (resolved against cwd) matches a literal path (dir + subtree)
+// or a `re:` regex (tested against the resolved absolute path).
+function rmHits(command, literals, regexes) {
+  if ((!literals.length && !regexes.length) || !/\brm\b/.test(command)) return false;
   for (let tok of command.split(/\s+/)) {
     tok = tok.replace(/^['"]|['"]$/g, "");
     if (!tok || tok === "rm" || tok === "sudo" || tok === "--" || tok.startsWith("-")) continue;
     const t = tok.startsWith("~") ? homedir() + tok.slice(1) : tok;
     const cand = resolve(_STATE.cwd || ".", t).replace(/\/+$/, "");
-    for (const prot of _PROTECTED_LITERAL) if (cand === prot || cand.startsWith(prot + "/")) return true;
-    for (const rx of _PROTECTED_REGEX) if (rx.test(cand)) return true;
+    for (const prot of literals) if (cand === prot || cand.startsWith(prot + "/")) return true;
+    for (const rx of regexes) if (rx.test(cand)) return true;
   }
   return false;
+}
+function rmHitsProtected(command) {
+  return rmHits(command, _PROTECTED_LITERAL, _PROTECTED_REGEX);
+}
+function rmHitsBlocked(command) {
+  return rmHits(command, _BLOCKED_LITERAL, _BLOCKED_REGEX);
 }
 
 const BYPASS = (env.AEGMIS_BYPASS_PATTERNS || "")
@@ -169,8 +196,11 @@ function classify(toolName, input) {
     const cmd = command || "";
     if (FORWARD_ALL) {
       if (bypassed(cmd)) return { gate: false };
-    } else if (!shouldGateShell(cmd)) {
-      return { gate: false };
+    } else {
+      // Local mode only: hard-DENY rm of a blocked path before the gate check —
+      // never forwarded for approval.
+      if (rmHitsBlocked(cmd)) return { gate: true, hardBlock: true };
+      if (!shouldGateShell(cmd)) return { gate: false };
     }
     const short = (cmd.split("\n")[0] || "").slice(0, 120);
     return { gate: true, action: "bash_command", message: `Run: \`${short}\``, kwargs: input };
@@ -191,6 +221,13 @@ async function requireApproval(toolName, input) {
   try {
     const decision = classify(toolName, input);
     if (!decision.gate) return undefined;
+    if (decision.hardBlock) {
+      // Denied locally — no approval API round-trip, never sent to a human.
+      return {
+        block: true,
+        reason: "Deletion of a hard-blocked path is denied (AEGMIS_BLOCKED_PATHS) — not sent for approval.",
+      };
+    }
 
     if (!API_KEY) throw new Error("AEGMIS_API_KEY is not set");
     const orgId = extractOrgId(API_KEY);
@@ -203,7 +240,7 @@ async function requireApproval(toolName, input) {
       thread_id: threadId,
       action: decision.action,
       message: decision.message,
-      channel: "slack",
+      channel: CHANNEL,
       tool_name: toolName,
       tool_kwargs: decision.kwargs,
       adapter: "pi",

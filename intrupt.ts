@@ -71,27 +71,39 @@ const SHELL_GATE_PATTERNS = [
 // User-defined protected paths (AEGMIS_PROTECTED_PATHS) — also gate `rm` of each
 // listed path and anything under it, on top of the built-in catastrophic targets.
 for (const _pp of (env.AEGMIS_PROTECTED_PATHS || "").split(",")) {
-  const _p = _pp.trim().replace(/\/+$/, "");
-  if (_p) {
-    const _esc = _p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const _t = _pp.trim();
+  if (_t && !_t.startsWith("re:")) {   // literal entry -> raw-command fallback pattern
+    const _esc = _t.replace(/\/+$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     SHELL_GATE_PATTERNS.push(new RegExp("\\brm\\b[\\s\\S]*\\s" + _esc + "(/|\\s|$)", "i"));
   }
 }
 
 
-// cwd-aware protected-path resolution — catches relative rm targets like ./ok.
-const _PROTECTED = (env.AEGMIS_PROTECTED_PATHS || "")
-  .split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean)
-  .map((pp) => (pp.startsWith("~") ? homedir() + pp.slice(1) : pp)).map((pp) => resolve(pp));
+// cwd-aware protected-path resolution. Each entry is a LITERAL dir (dir + subtree)
+// or, prefixed "re:", a REGEX tested against the resolved absolute rm target.
+const _PROTECTED_LITERAL = [];
+const _PROTECTED_REGEX = [];
+for (const _pp of (env.AEGMIS_PROTECTED_PATHS || "").split(",")) {
+  const _t = _pp.trim();
+  if (!_t) continue;
+  if (_t.startsWith("re:")) {
+    try { _PROTECTED_REGEX.push(new RegExp(_t.slice(3))); }
+    catch (e) { console.error(`[intrupt hook] ignoring invalid AEGMIS_PROTECTED_PATHS regex ${JSON.stringify(_t.slice(3))}: ${e.message}`); }
+  } else {
+    const _p = _t.replace(/\/+$/, "");
+    _PROTECTED_LITERAL.push(resolve(_p.startsWith("~") ? homedir() + _p.slice(1) : _p));
+  }
+}
 const _STATE = { cwd: "" };
 function rmHitsProtected(command) {
-  if (!_PROTECTED.length || !/\brm\b/.test(command)) return false;
+  if ((!_PROTECTED_LITERAL.length && !_PROTECTED_REGEX.length) || !/\brm\b/.test(command)) return false;
   for (let tok of command.split(/\s+/)) {
     tok = tok.replace(/^['"]|['"]$/g, "");
     if (!tok || tok === "rm" || tok === "sudo" || tok === "--" || tok.startsWith("-")) continue;
     const t = tok.startsWith("~") ? homedir() + tok.slice(1) : tok;
     const cand = resolve(_STATE.cwd || ".", t).replace(/\/+$/, "");
-    for (const prot of _PROTECTED) if (cand === prot || cand.startsWith(prot + "/")) return true;
+    for (const prot of _PROTECTED_LITERAL) if (cand === prot || cand.startsWith(prot + "/")) return true;
+    for (const rx of _PROTECTED_REGEX) if (rx.test(cand)) return true;
   }
   return false;
 }

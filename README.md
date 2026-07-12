@@ -106,7 +106,7 @@ The handler **never throws** — every error path returns a `block` decision, so
 | `AEGMIS_TIMEOUT` | no | `600` | Max seconds to wait for a decision |
 | `AEGMIS_POLL_INTERVAL` | no | `5` | Seconds between status polls |
 | `AEGMIS_BYPASS_PATTERNS` | no | — | Comma-separated regex; matching shell commands skip approval |
-| `AEGMIS_PROTECTED_PATHS` | no | — | Comma-separated dirs to also gate `rm` on (dir + subtree), on top of built-in home/root/system targets |
+| `AEGMIS_PROTECTED_PATHS` | no | `re:^$HOME$` (set by installer) | Comma-separated dir(s) to also gate `rm` on — each dir **and everything under it**, cwd-resolved. List **one or many** (e.g. `~/work,~/secrets`). Prefix an entry with **`re:`** for a regex tested against the resolved absolute path, e.g. `re:^$HOME$` (home dir only) or `re:^$HOME/(work\|important)(/\|$)` |
 
 ---
 
@@ -128,6 +128,30 @@ To also require approval before deleting **specific dirs of yours**, list them:
 ```bash
 export AEGMIS_PROTECTED_PATHS=/Users/you/work,/Users/you/important
 ```
+
+### `AEGMIS_PROTECTED_PATHS` — literal paths and `re:` regexes
+
+Comma-separated entries — each a **literal** dir or a **`re:`**-prefixed **regex** (the regex is tested against the resolved absolute `rm` target):
+
+| Entry | Effect |
+|---|---|
+| `re:^$HOME$` | gate `rm` of the **home dir itself only** — `rm -rf ~` gates, but `rm -rf ~/project` and `rm ~/notes.txt` run free *(installer default)* |
+| `re:^$HOME/(work\|important)(/\|$)` | gate the `work` + `important` **subtrees** |
+| `~/work,re:^$HOME$` | **mixed** — literal `work` subtree *and* regex home-exact both gate; anything else runs free |
+| `~/work` | plain **literal** — that dir and everything under it |
+
+Anchor a regex with `^…$` to match a dir exactly (not its contents). Invalid regexes are skipped with a stderr warning.
+
+**Worked examples** (write these as `AEGMIS_PROTECTED_PATHS` entries; `$HOME` expands when the env file is sourced):
+
+| Intent | Entry |
+|---|---|
+| Protect **only the home dir itself**, not its contents | `re:^$HOME$` |
+| Protect `work` + `important` (and their subtrees) | `re:^$HOME/(work\|important)(/\|$)` |
+| Protect `project/demo` **except** `project/demo/scratch` | `re:^$HOME/project/demo/(?!scratch(/\|$)).*` |
+| Protect any `.env` / secrets file anywhere under home | `re:^$HOME/.*(\.env(\|\.)\|/secrets?/)` |
+| Multiple, mixed with literal | `$HOME/work,re:^$HOME$` |
+
 
 Targets are resolved against the command's working directory, so relative refs are
 caught too:

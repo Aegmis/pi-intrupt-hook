@@ -3,7 +3,32 @@
 All notable changes to `pi-intrupt-hook` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com); dates are ISO-8601.
 
-## [0.1.0-beta.1] - 2026-07-12
+## [0.0.1-beta.4] - 2026-07-15
+
+### Fixed
+- **Fail-closed crash guard** — the `tool_call` handler now returns `{ block: true }` on
+  any unexpected error, so a crash blocks instead of silently allowing.
+
+### Added
+- **Whole-project delete gate** — `rm` / `find` targeting the working dir, an ancestor,
+  or `/` is gated (`rm -rf .`, `rm -rf "$HOME"`, `$PWD`, `..`); a subdir delete runs free.
+- **Protected-path WRITE gate** — a write/create verb (`touch`, `tee`, `cp`, `mv`,
+  `install`, `dd`, `ln`, or `>` / `>>`) into an `AEGMIS_PROTECTED_PATHS` dir is gated.
+  Opt-in and directory-scoped; writes elsewhere and all reads run free.
+- **Self-protection** — mutating commands touching the hook's own config (`~/.pi/…`,
+  `.git/hooks`) are always gated.
+- Broader denylist: exfiltration (`gh repo/gist create`, `git remote add/set-url`,
+  `curl --data-binary/-T/-F`, `scp`, `rsync host:`, `nc`), mass-delete (`find -delete`,
+  `git clean -f`, `rsync --delete`, `shred`), and obfuscation (pipe-to-shell, `base64 -d`,
+  `eval`, `sh -c`, `xargs rm`).
+
+### Changed
+- **Command chains split** on `&&`, `||`, `;`, `|`, each segment judged independently;
+  bypass matches per-segment. **Shell-aware parsing** (quote-aware tokenizer +
+  `~`/`$HOME`/`$PWD` expansion) closes evasions like quoted `rm -rf "$HOME"` and `rm -rf ./`.
+- `AEGMIS_BLOCKED_PATHS` and the workspace / self-protect gates apply in **both** modes.
+
+## [0.0.1-beta.3] - 2026-07-12
 
 ### Added
 - `AEGMIS_BLOCKED_PATHS` — **hard local deny** for `rm`: a matching deletion is blocked

@@ -262,6 +262,27 @@ function rmHitsBlocked(command) {
   return rmHits(command, _BLOCKED_LITERAL, _BLOCKED_REGEX);
 }
 
+// Write/create gate for AEGMIS_PROTECTED_PATHS — gate not just `rm` of a protected
+// path but also file CREATION / writes INTO it (touch, tee, cp/mv, `>`/`>>`
+// redirection). Scoped to protected dirs only, so writes elsewhere stay free.
+// Mirrors the rm-based protected-path gate.
+const WRITE_VERB = /\b(touch|tee|cp|mv|install|dd|ln)\b|>\s*\S|>>\s*\S/;
+
+// True if a write/create verb targets a path under a literal dir (+subtree) or a
+// `re:` regex.
+function writeHits(command, literals, regexes) {
+  if ((!literals.length && !regexes.length) || !WRITE_VERB.test(command)) return false;
+  for (const t of pathTokens(command)) {
+    const cand = resolvePath(t, _STATE.cwd);
+    for (const prot of literals) if (cand === prot || cand.startsWith(prot + "/")) return true;
+    for (const rx of regexes) if (rx.test(cand)) return true;
+  }
+  return false;
+}
+function writeHitsProtected(command) {
+  return writeHits(command, _PROTECTED_LITERAL, _PROTECTED_REGEX);
+}
+
 // True if a delete targets the whole project — the working dir itself or any
 // ancestor of it (or filesystem root). Deleting a SUBDIR (rm -rf build) stays
 // free; wiping the project (rm -rf . / ./ / "$PWD" / .. / the cwd path) gates.
@@ -336,6 +357,7 @@ function shouldGateShell(command) {
   for (const seg of segments(command)) {
     if (segmentBypassed(seg)) continue;
     if (rmHitsProtected(seg)) return true;
+    if (writeHitsProtected(seg)) return true;
     if (SHELL_GATE_PATTERNS.some((re) => re.test(seg))) return true;
   }
   return false;

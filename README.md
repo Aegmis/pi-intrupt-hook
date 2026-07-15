@@ -291,7 +291,7 @@ exercises the real module (classifier, fail-closed behaviour, and the actual
 [PASS] wiring — handler returns block for gated call
 [PASS] wiring — handler returns undefined for non-gated call
 
-Results: 21/21 passed ✓
+Results: 35/35 passed ✓
 ```
 
 > ⚠️ **Verify against your Pi version.** Pi's extension API is young. This
